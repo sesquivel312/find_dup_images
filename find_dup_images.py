@@ -14,6 +14,11 @@ comments:
       for this use case
     * maybe look for dups as they're computed - store the file names w/the hash?
 
+todo handle bad user input - e.g. keep index outside range, etc.
+todo update the database file when files have been deleted or otherwise changed!!!
+todo let user see images after deciding to delete them
+todo improve type identification
+todo handle any file type?
 todo refine the display of multiple alts using matplot lib
 todo refine dup handling logic - possibly pull in a menu package, use a cli package, etc.
 """
@@ -22,19 +27,22 @@ import argparse
 import os
 from pathlib import Path
 from pprint import pprint as pp
+import sys
 import time
 
-import filetype
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from progress.spinner import MoonSpinner
 import xxhash
 import yaml
 
+from config import image_extensions
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--path', help='Path in which to look for duplicate files, '
                                    'if NOT specified post process saved data from a previous run')
-parser.add_argument('--post_process', action='store_true', help='Dispose of duplicates '
+parser.add_argument('--ext-only', action='store_true', help='collect unique file extensions only')
+parser.add_argument('--post-process', action='store_true', help='Dispose of duplicates '
                                                                 'immediately after finding them')
 args = parser.parse_args()
 
@@ -85,16 +93,20 @@ def get_file_hash(path, chunk_size=200):
         return xh.hexdigest()
 
 
-def build_file_db(start_dir):
+def build_file_db(start_dir, extensions):
     """
     return a database containing info for each file under the
     starting path/directory
 
+    :param extensions:
     :param start_dir: directory in which to start
     :type start_dir: str
     :return: a 2-tuple containing the info db and time to run this function
     :rtype: tuple
     """
+
+    if not extensions:
+        sys.exit('@@@ERROR valid extension list not passed to build_file_db')
 
     db = {}
 
@@ -102,26 +114,22 @@ def build_file_db(start_dir):
 
     for p in get_file_list(start_dir):
 
-        if p.is_file():
+        # got a file (not a dir) and filename has relevant extension
+        if p.is_file() and p.suffix.lower() in extensions:
 
             pstring = str(p)
+
             xh = get_file_hash(p)
-            mime_type = filetype.guess(pstring)  # returns None or an object
-            mime_type = mime_type.mime if mime_type else None  # handle case of guess == None
 
-            if xh not in db:  # first time seeing this file
+            # first time seeing this file
+            if xh not in db:
 
-                db[xh] = [{'path': pstring, 'extension': p.suffix.lower(),
-                           'mime_type': mime_type},]
+                db[xh] = [{'path': pstring, 'extension': p.suffix.lower(), }]
 
-            # elif 'alts' not in db[xh]:  # first duplicate for xh found, create alts key & add data
-            #
-            #     db[xh]['alts'] = [pstring, ]
+            # found another alt for xh, add it to the alts key
+            else:
 
-            else:  # found another alt for xh, add it to the alts key
-
-                db[xh].append({'path': pstring, 'extension': p.suffix.lower(),
-                               'mime_type': mime_type})
+                db[xh].append({'path': pstring, 'extension': p.suffix.lower(), })
 
         spinner.next()
 
@@ -130,16 +138,51 @@ def build_file_db(start_dir):
     return db
 
 
-def get_duplicates(start_path):
+def get_file_extensions(start_dir):
+    """
+    return a database containing the unique file extensions of files in a given directory
+    starting path/directory
+
+    todo track count of each extension type
+
+    :param start_dir: directory in which to start
+    :type start_dir: str
+    :return: a 2-tuple containing the info db and time to run this function
+    :rtype: tuple
+    """
+
+    exts = set()
+
+    spinner = MoonSpinner('Working ')  # cli spinner to indicate something is happening
+
+    for p in get_file_list(start_dir):
+
+        if p.is_file():
+
+            exts.add(p.suffix.lower())
+
+        spinner.next()
+
+    print('\n')
+
+    return exts
+
+
+def get_duplicates(start_path, extensions):
     """
     get the duplicates from a file info db created by build_file_db
 
+    :param extensions:
     :param file_info_db: dict returned by build_file_db
     :type file_info_db: dict
     :return: dict of dup files only
     :rtype: tbd
     """
-    file_info_db = build_file_db(start_path)
+
+    if not extensions:
+        sys.exit('@@@ERROR - invalid extension list in get_duplicates')
+
+    file_info_db = build_file_db(start_path, extensions)
 
     dup_free_db = {}
 
@@ -294,12 +337,22 @@ def write_dup_list(dups):
 
 if __name__ == '__main__':
 
+    start = time.time()
+
+    # user wants extensions only
+    if args.ext_only and args.path:
+
+        exts = get_file_extensions(args.path)
+
+        duration = time.time() - start
+        print('Completed looking for unique file extensions')
+        print(f'found {len(exts)} extensions in: {time.strftime("%H:%M:%S", time.gmtime(duration))}')
+        pp(exts)
+
     # user wants to find dus and save to file 'dups.out'
-    if args.path:
+    elif args.path:
 
-        start = time.time()
-
-        dups = get_duplicates(args.path)
+        dups = get_duplicates(args.path, image_extensions)
 
         duration = time.time() - start
         print('Completed looking for duplicate files')
