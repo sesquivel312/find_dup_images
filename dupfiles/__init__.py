@@ -14,9 +14,9 @@ comments:
       for this use case
     * maybe look for dups as they're computed - store the file names w/the hash?
 
-todo handle bad user input - e.g. keep index outside range, etc.
 todo update the database file when files have been deleted or otherwise changed!!!
-todo let user see images after deciding to delete them
+todo handle bad user input - e.g. keep index outside range, etc. @@ allow user at least two tries to delete when view during delete
+todo improve the way user input is handled - factor out of functions, loops?
 todo improve type identification
 todo handle any file type?
 todo refine the display of multiple alts using matplot lib
@@ -37,37 +37,23 @@ import yaml
 from config import image_extensions
 
 
-def save_to_file(data, fname='data.yaml', fmt='yaml'):
+def save_to_file(data, fname=None):
     """
-    save a data structure to a file, default yaml format.
+    save a data structure to a yaml file
 
-    :param fname:
+    :param fname: name of file to save
     :param data: data - a list, tuple, dict, etc.
     :type data: multiple
-    :param fmt: file format to save data in
-    :type fmt: str
     :return: TBD
     """
 
-    if not fname:
-
-        input('Enter a file name to write data to WITHOUT extension: ')
-
-        if fname == '':
-                fname = 'data.yaml'
+    if fname is None:
+        sys.exit('@@@ Attempted to save a file without providing a name, existing...')
 
     fname = Path(fname)
 
-    if fmt == 'yaml':
-
-        fname = fname.with_name(fname.name + '.yaml')
-
-        with open(fname, 'w') as f:
-            yaml.dump(data, f)
-
-    else:
-
-        print(f'@@@Error file format {fmt} not currently supported by save_to_file')
+    with open(fname, 'w') as f:
+        yaml.dump(data, f)
 
 
 def get_file_list(path):
@@ -135,12 +121,12 @@ def build_file_db(start_dir, extensions):
 
     spinner = MoonSpinner('Working ')  # cli spinner to indicate something is happening
 
-    for p in get_file_list(start_dir):
+    for p in get_file_list(start_dir):   # loop over all the Paths (files) in the hierarchy starting at start_dir
 
-        # got a file (not a dir) and filename has relevant extension
+        # got a file (not a dir) and filename has an extension of interest
         if p.is_file() and p.suffix.lower() in extensions:
 
-            pstring = str(p)
+            pstring = str(p)  # get the Path in string form
 
             xh = get_file_hash(p)
 
@@ -149,7 +135,7 @@ def build_file_db(start_dir, extensions):
 
                 db[xh] = [{'path': pstring, 'extension': p.suffix.lower(), }]
 
-            # found another alt for xh, add it to the alts key
+            # found a likely alt of an existing file, add it to the alts key for for the existing file
             else:
 
                 db[xh].append({'path': pstring, 'extension': p.suffix.lower(), })
@@ -203,9 +189,9 @@ def get_duplicates(start_path, extensions):
     """
     get the duplicates from a file info db created by build_file_db
 
-    :param extensions:
-    :param file_info_db: dict returned by build_file_db
-    :type file_info_db: dict
+    :param start_path: file system path in which to start looking for duplicates
+    :type start_path: pathlib.Path
+    :param extensions: collection of file extensions that identify files of interest
     :return: dict of dup files only
     :rtype: tbd
     """
@@ -213,9 +199,11 @@ def get_duplicates(start_path, extensions):
     if not extensions:
         sys.exit('@@@ERROR - invalid extension list in get_duplicates')
 
-    file_info_db = build_file_db(start_path, extensions)
+    file_info_db = build_file_db(start_path, extensions)  # get file hashes and dup info
 
     dup_free_db = {}
+
+    start = time.time()
 
     for hash, alts in file_info_db.items():
 
@@ -225,10 +213,12 @@ def get_duplicates(start_path, extensions):
             # except for the first one
             dup_free_db[file_info_db[hash][0]['path']] = alts[1:]
 
+    print(f'found {len(dup_free_db)} duplicates in: {time.time() - start}')
+
     return dup_free_db
 
 
-def show_images_mp(images):
+def show_images(images):
     """
     display bitmap images from a list
 
@@ -294,26 +284,67 @@ def handle_dup_images(duplicates):
     :return:
     """
 
-    for file, data in duplicates.items():
+    # records the names of files that are deleted, used to remove from the dup DB before resaving it
+    deleted_file_list = []
+
+    for fname, data in duplicates.items():
 
         alts = get_alt_file_names(data)
 
-        alts.insert(0, file)  # put the "canonical" file name first - which was the key to this dup dict entry
+        alts.insert(0, fname)  # put the "canonical" file name first - which was the key to this dup dict entry
 
-        print(f'\nWhat would you like to do with dups of: {alts[0]}?\n')
+        print(f'\n@@@ Now processing: {alts[0]}\nWhat would you like to do with duplicates of this image?\n')
 
-        action = input('  (s)how alts, (d)elete alts, futures_here, ENTER to skip & continue: ')
+        action = input('  (s)how alts, (d)elete alts, (q)uit, futures_here, ENTER to skip & continue: ')
 
-        if action is not None:
-            if action == 's':
-                show_images_mp(alts)
-                action = input('  Delete alts for this set (y/n)?: ')
-                if action == 'y':
-                    delete_alts(alts)
-            if action == 'd':
+        if action in ['s', 'S']:
+
+            show_images(alts)
+
+            action = input('  Delete alts for this set (y/n)?: ')
+
+            if action in ['y', 'Y']:
+
                 delete_alts(alts)
-        else:
+
+                deleted_file_list.append(fname)  # remove the entry from the dup db todo add exception handling (KeyError?)
+
+        if action in ['d', 'D']:
+
+            delete_alts(alts)
+
+            deleted_file_list.append(fname)  # same as previous instance of this line
+
+    return deleted_file_list
+
+
+def get_numeric_user_input(min, max, prompt):
+    """
+    get user input - expecting an positive integer between min and max - inclusive
+
+    Prompt user using the prompt string provided
+
+    :param prompt:
+    :param range:
+    :return:
+    """
+
+    # todo verify params are integers and max > min
+
+    while True:
+
+        value = input(prompt)
+
+        try:
+            value = int(value)
+        except ValueError:
             continue
+
+        # we got a number, check for range
+
+        if min <= value <= max:
+
+            return value
 
 
 def delete_alts(alts):
@@ -322,33 +353,57 @@ def delete_alts(alts):
 
     :param alts: alternative image file name/path - including the "canonical" image file
     :type alts: list
-    :return: TBD
-    :rtype: TBD
+    :return: code indicating success (0) or failure (anything else)
+    :rtype: int
     """
 
+    # print list of alts with numbers to select a keeper
     print('  The list of duplicates is...\n')
-
     for i, alt in enumerate(alts):
-
         print(f'  {i}: {alt}')
 
-    img_to_delete = input('\nWhich one to *KEEP* (enter number): ')
-    img_to_delete = int(img_to_delete)  # will be str, need int
+    selection = input('\nWhich one to *KEEP* (enter number), or "v" to view images: ')
 
-    if img_to_delete is not None:
+    # display the images
+    if selection in ['v', 'V']:
+        show_images(alts)
 
-        really = input(f'Really delete duplicates of {alts[img_to_delete]}?  Enter "yes": ')
+        # reprompt for alt to delete (assuming can still see the
+        # previously displayed list
+        selection = input('\nWhich one to *KEEP* (enter number): ')
 
-        if really is not None and really == 'yes':  # really want to delete OTHER images
+    try:
+        selection = int(selection)
+    except ValueError as e:
+        selection = input(f'Please enter a number from the the list shown above: ')
 
-            alts.pop(img_to_delete)  # remove the keeper from the alt list
+    # validate user input
+    if selection not in range(len(alts)):  # entered a number outside possible values
 
-            for alt in alts:
-                os.remove(alt)
+        selection = input('Your selection was out of range, please enter '
+                          'the number of one of the displayed alts: ')
+        try:
+            selection = int(selection)
+        except ValueError as e:
+            print(f'Still not a number, skipping this one...')
+            return -1
 
-        else:
+        if selection not in range(len(alts)):  # second time user entered a number out of range
+            print('Selection is not one of the displayed options, skipping...')
+            return -1
 
-            print('Skipping... MUST enter "yes", not just "y"')
+    really = input(f'Really delete duplicates of {alts[selection]}, enter "y": ')
+
+    if really in ['y', 'Y']:  # really want to delete OTHER images
+
+        alts.pop(selection)  # remove the keeper from the alt list - i.e. "keep it"
+
+        for alt in alts:
+            os.remove(alt)
+
+    else:
+
+        print('Skipping... must enter "y" to delete')
 
 
 def write_dup_list(dups):
@@ -364,6 +419,59 @@ def write_dup_list(dups):
     with open('dups.out', 'w') as f:
 
         yaml.dump(dups, f)
+
+
+def check_for_collisions(hashes):
+    """
+    todo write this function that ...
+
+    Given a list of hashes, checks for duplicates
+
+    ideas:
+
+        I think the collections library has a way to produce dict counts by key
+        ??? actually is this even possible - I add dups when the hash is the same,
+        So I expect dups - what I want to avoid is different files w/the same hash
+        need other info on that - perhaps check file name, image info such as location
+        and date, etc.
+
+    :param hashes:
+    :return:
+    """
+
+    pass
+
+
+def update_db(deleted_files, duplicate_db, db_file_name):
+    """
+    remove the entries from the duplicate file db whose files have been removed from
+    the filesystem by the user
+
+    given the dup DB (dict) and an entry, delete said entry
+
+    Would use this when the file was deleted at users request
+
+    :param db_file_name: name of the file to save the updated db to
+    :type db_file_name: pathlib.Path
+    :param deleted_files: list of files to be removed from the db
+    :type deleted_files: list
+    :param duplicate_db: dict of duplicate files, keyed on fully qualified file name of "canonical" alternate
+    :type duplicate_db: dict
+    :return: None
+    """
+
+    # todo validate db_file_name
+
+    for f in deleted_files:
+
+        duplicate_db.pop(f)
+
+    with open(db_file_name, 'w') as f:  # open for write, will truncate the file first
+
+        yaml.dump(duplicate_db, f)
+
+
+
 
 
 
