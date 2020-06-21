@@ -15,9 +15,9 @@ comments:
       for this use case
     * maybe look for dups as they're computed - store the file names w/the hash?
 
+todo rather than delete dups, gather them in a directory for later viewing - this would probably require creating another dup of the "canonical" image
 todo handle bad user input - e.g. keep index outside range, etc.
-todo update the database file when files have been deleted or otherwise changed!!!
-todo let user see images after deciding to delete them
+todo duplicate & optimize to use file sizes & hash of first 1k of file before dup detecting (try to cut down on hash time) - will require multiple passes over the list of files
 todo improve type identification
 todo handle any file type?
 todo refine the display of multiple alts using matplot lib
@@ -26,77 +26,92 @@ todo refine dup handling logic - possibly pull in a menu package, use a cli pack
 
 import argparse
 from pathlib import Path
-from pprint import pprint as pp
-import sys
-import time
 
 import yaml
 
 from config import image_extensions
 import dupfiles as df
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--path', help='Path in which to look for duplicate files, '
-                                   'if NOT specified post process saved data from a previous run')
-parser.add_argument('--ext-only', action='store_true', help='collect unique file extensions only')
-parser.add_argument('--post-process', action='store_true', help='Dispose of duplicates '
-                                                                'immediately after finding them')
+DEFAULT_DATA_FILE_NAME = 'duplicate-images'
+FOUND_EXT_LIST_FILE_NAME = 'found-exts'
+
+parser = argparse.ArgumentParser(description='Search for duplicate image files starting in a given directory.  '
+                                             'Optionally delete duplicates found or save duplicate data to a '
+                                             'file for later processing by this script.\n Typical usage is to '
+                                             'find dups first, then delete the files later as finding can take '
+                                             'some time.\nThere is also an option to collect extensions, which '
+                                             'is intended for testing purposes')
+parser.add_argument('--start-path', help='Path in which to begin looking for duplicates')
+parser.add_argument('--data-file', help='File to save duplicate data in, or the results of a previous run to process')
+parser.add_argument('--find-only', action='store_true', help='Create dup data file only')
+parser.add_argument('--exts-only', action='store_true', help=f'collect unique file extensions only, '
+                                                             f'written to file {FOUND_EXT_LIST_FILE_NAME}')
 args = parser.parse_args()
 
-# user wants extensions only
-if args.ext_only and args.path:
 
-    exts = df.get_file_extensions(args.path)
+# primary use case - find only - b/c it can take a long time
+if args.start_path is not None and args.find_only and not args.exts_only:
 
-    fname = input('Enter filename to save extensions in, enter saves to ./found-exts.yaml: ')
+    # dups is a dict keyed on file hash
+    dups = df.get_duplicates(args.start_path, image_extensions)
 
-    if fname == '':
-        fname = 'found-exts'
+    if args.data_file is None:  # set the default file name
+        data_file = Path(DEFAULT_DATA_FILE_NAME)
+    else:
+        # todo 3 validate the path given
+        data_file = Path(args.start_path)
 
-    df.save_to_file(exts, fname)
+    df.save_to_file(dups, data_file)
 
-# user wants to find dus and save to file 'dups.out'
-elif args.path:
 
-    dups = df.get_duplicates(args.path, image_extensions)
+# process existing dup data file
+elif args.start_path is None and not args.find_only and not args.exts_only:
 
-    duration = time.time() - start
-    print('Completed looking for duplicate files')
-    print(f'found {len(dups)} duplicates in: {time.strftime("%H:%M:%S", time.gmtime(duration))}')
+    if args.data_file is not None:  # user specified data file to use
+        data_file = Path(args.data_file)
+    else:
+        data_file = Path(DEFAULT_DATA_FILE_NAME)
 
-    df.write_dup_list(dups)
+    print(f'@@@ attempting to process {data_file}')
 
-    if args.post_process:  # use wanted to process dups immediately after finding them
+    if data_file.is_file():  # user input validation
 
-        df.handle_dup_images(dups)
+        print(f'\nProcessing duplicates using data file: {data_file}')
 
-# assume post processing existing data
-else:
-
-    data_file = input('\nEnter fully qualified path to previously generated \n'
-                      'data file, or ENTER to use default [./dups.out]: ') or 'dups.out'
-
-    data_file = Path(data_file)  # make the string a pathlib.Path object
-    print(f'\nUsing data file {data_file}')
-
-    proceed = input('\n  **** Be sure the source files have not changed since you \n  **** '
-                    'ran this script to create the dup data file, continue (y/n/q): ')
-
-    if data_file.is_file() and proceed == 'y':
-
+        # load the data from file
         with open(data_file, 'r') as f:
 
             dups = yaml.load(f, Loader=yaml.FullLoader)
-            df.handle_dup_images(dups)
 
-    elif data_file.is_file() and proceed in ['', 'n', 'q']:
+            deleted_files = df.handle_dup_images(dups)  # capture the files deleted in order to update the db
 
-        sys.exit('\nQuit post processing')
+        df.update_db(deleted_files, dups, data_file)
 
+# find & delete
+elif args.start_path is not None and not args.find_only and not args.exts_only:
+
+    # get dup data
+    dups = df.get_duplicates(args.start_path, image_extensions)
+
+    # todo move this into get_duplicates()
+
+    if args.data_file is None:  # set the default file name
+        data_file = Path(DEFAULT_DATA_FILE_NAME)
     else:
+        # todo 3 validate the path given
+        data_file = Path(args.start_path)
 
-        print('@@@ ERROR invalid data file')
+    deleted_files = df.handle_dup_images(dups)  # user disposes of files, capture the files deleted to update db
+
+    df.update_db(deleted_files, dups, data_file)
 
 
+# list extensions - mutex w/the previous scenarios
+elif args.exts_only and args.start_path is None and args.data_file is None and not args.find_only:
 
+    exts = df.get_file_extensions(args.start_path)
 
+    df.save_to_file(exts, FOUND_EXT_LIST_FILE_NAME)
+
+else:  # invalid argument spec
+    print('Invalid option combination specified, please try again')
